@@ -18,7 +18,7 @@ import (
 )
 
 // KCPTransport implements a sing-box compatible network transport over KCP/Yamux
-// tunnelled through TURN.  It is used when sing-box is configured as the
+// tunnelled through TURN. It is used when sing-box is configured as the
 // protocol layer but we still want to route traffic through the Lionheart
 // TURN relay infrastructure.
 type KCPTransport struct {
@@ -32,7 +32,7 @@ type KCPTransport struct {
 }
 
 // NewKCPTransport creates a KCPTransport that connects to peer using pw as
-// the session password.  It does NOT start the tunnel; call Connect() first.
+// the session password. It does NOT start the tunnel; call Connect() first.
 func NewKCPTransport(ctx context.Context, peer, pw string, logger sbLog.Logger) *KCPTransport {
 	child, cancel := context.WithCancel(ctx)
 	return &KCPTransport{
@@ -153,23 +153,23 @@ func (d *DirectKCPDialer) DialContext(ctx context.Context, _, _ string) (net.Con
 // FIXED: all three packages (adapter, sbLog, option) are now imported above.
 // Previously these were referenced without imports, causing:
 //   - "undefined: adapter" on lines 362, 389, 396, 402
-//   - "undefined: log"     on line 402
-//   - "undefined: option"  on line 402
+//   - "undefined: log" on line 402
+//   - "undefined: option" on line 402
 // ---------------------------------------------------------------------------
 
 type LionheartOutbound struct {
 	transport *KCPTransport
 	tag       string
-	logger    adapter.Logger     // FIXED: uses imported adapter package
+	logger    sbLog.Logger // FIXED: используем sbLog.Logger вместо adapter.Logger
 }
 
 // NewLionheartOutbound creates an outbound that uses the given KCPTransport.
 // router and logger satisfy the adapter.Router / adapter.Logger interfaces
 // required by sing-box outbound constructors.
 func NewLionheartOutbound(
-	router adapter.Router,  // FIXED: adapter imported
-	logger adapter.Logger,  // FIXED: adapter imported
-	_ option.Outbound,      // FIXED: option imported — carry the outbound tag/cfg
+	router adapter.Router, // FIXED: adapter imported
+	logger sbLog.Logger,   // FIXED: используем sbLog.Logger вместо adapter.Logger
+	_ option.Outbound,     // FIXED: option imported — carry the outbound tag/cfg
 	tag string,
 	transport *KCPTransport,
 ) *LionheartOutbound {
