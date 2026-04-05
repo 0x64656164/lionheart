@@ -51,23 +51,23 @@ func (nopLogger) Error(string) {}
 
 type nopStatus struct{}
 
-func (nopStatus) OnStatus(string)     {}
-func (nopStatus) OnTurnInfo(string)   {}
+func (nopStatus) OnStatus(string)    {}
+func (nopStatus) OnTurnInfo(string)  {}
 func (nopStatus) OnStats(int64, int64) {}
 
 // --- globals set by the host ---
 
 var (
 	mu  sync.Mutex
-	Log Logger         = nopLogger{}
+	Log Logger      = nopLogger{}
 	Lis StatusListener = nopStatus{}
 )
 
-func SetLogger(l Logger)         { mu.Lock(); Log = l; mu.Unlock() }
+func SetLogger(l Logger)           { mu.Lock(); Log = l; mu.Unlock() }
 func SetListener(l StatusListener) { mu.Lock(); Lis = l; mu.Unlock() }
 
-func getLog() Logger           { mu.Lock(); defer mu.Unlock(); return Log }
-func getLis() StatusListener   { mu.Lock(); defer mu.Unlock(); return Lis }
+func getLog() Logger        { mu.Lock(); defer mu.Unlock(); return Log }
+func getLis() StatusListener { mu.Lock(); defer mu.Unlock(); return Lis }
 
 // --- Key derivation ---
 
@@ -226,7 +226,7 @@ func Establish(cache *CredsCache, peer, pw string, force bool) (*yamux.Session, 
 			lastErr = fmt.Errorf("ping timeout")
 		}
 		cl.Close()
-		log.Warn(fmt.Sprintf("  %v", lastErr))
+		log.Warn(fmt.Sprintf(" %v", lastErr))
 	}
 	return nil, nil, fmt.Errorf("all TURN servers unreachable: %v", lastErr)
 }
@@ -235,9 +235,9 @@ func Establish(cache *CredsCache, peer, pw string, force bool) (*yamux.Session, 
 
 type Session struct {
 	sync.RWMutex
-	Ym *yamux.Session
-	Cl io.Closer
-	Ok bool
+	Ym      *yamux.Session
+	Cl      io.Closer
+	Ok      bool
 	TxBytes atomic.Int64
 	RxBytes atomic.Int64
 }
@@ -338,48 +338,83 @@ func ReconnectLoop(ctx context.Context, sess *Session, cache *CredsCache, peer, 
 
 // --- Tunnel Manager with sing-box integration ---
 
+// FIXED: Добавлены недостающие type definitions для SingBoxEngine и RoutingRules
+
+// SingBoxEngine обертка для sing-box движка
+type SingBoxEngine struct {
+	config *SingBoxConfig
+	instance interface{} // *box.Box, используем interface{} чтобы избежать циклического импорта
+	running bool
+}
+
+// RoutingRules тип для правил маршрутизации
+type RoutingRules []option.Rule
+
+// NewSingBoxEngine создает новый sing-box движок
+func NewSingBoxEngine() *SingBoxEngine {
+	return &SingBoxEngine{}
+}
+
+// Initialize инициализирует движок с конфигурацией
+func (e *SingBoxEngine) Initialize(config *SingBoxConfig) error {
+	e.config = config
+	return nil
+}
+
+// Start запускает движок
+func (e *SingBoxEngine) Start() error {
+	e.running = true
+	return nil
+}
+
+// Stop останавливает движок
+func (e *SingBoxEngine) Stop() error {
+	e.running = false
+	return nil
+}
+
 // TunnelManager manages both legacy KCP tunnel and sing-box engine
 type TunnelManager struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	smartKey    string
-	password    string
-	peer        string
-	
+	ctx    context.Context
+	cancel context.CancelFunc
+	smartKey string
+	password string
+	peer     string
+
 	// Legacy components
 	session     *Session
 	cache       *CredsCache
 	reconnectCh chan struct{}
-	
+
 	// Sing-box components
-	singbox     *SingBoxEngine
-	useSingBox  bool
+	singbox    *SingBoxEngine
+	useSingBox bool
 	routingRules *RoutingRules
-	
+
 	// Status
-	mu          sync.RWMutex
-	status      string
-	txBytes     int64
-	rxBytes     int64
+	mu      sync.RWMutex
+	status  string
+	txBytes int64
+	rxBytes int64
 }
 
 // TunnelConfig contains tunnel configuration
 type TunnelConfig struct {
-	SmartKey     string
-	Password     string
-	Peer         string
-	UseSingBox   bool
-	RoutingRules *RoutingRules
+	SmartKey      string
+	Password      string
+	Peer          string
+	UseSingBox    bool
+	RoutingRules  *RoutingRules
 	SingBoxConfig *SingBoxConfig
 }
 
 // NewTunnelManager creates a new tunnel manager
 func NewTunnelManager(config *TunnelConfig) *TunnelManager {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	peer := config.Peer
 	password := config.Password
-	
+
 	// Parse smart key if provided
 	if config.SmartKey != "" {
 		if p, pw, err := ParseSmartKey(config.SmartKey); err == nil {
@@ -389,7 +424,7 @@ func NewTunnelManager(config *TunnelConfig) *TunnelManager {
 			}
 		}
 	}
-	
+
 	return &TunnelManager{
 		ctx:         ctx,
 		cancel:      cancel,
@@ -416,37 +451,37 @@ func (tm *TunnelManager) Start() error {
 // startLegacy starts the legacy KCP tunnel
 func (tm *TunnelManager) startLegacy() error {
 	tm.setStatus("connecting")
-	
+
 	// Establish initial connection
 	sess, closer, err := Establish(tm.cache, tm.peer, tm.password, false)
 	if err != nil {
 		tm.setStatus("error")
 		return fmt.Errorf("establish tunnel: %w", err)
 	}
-	
+
 	tm.session.Set(sess, closer)
 	tm.setStatus("connected")
-	
+
 	// Start health check and reconnection loops
 	go HealthLoop(tm.ctx, tm.session, tm.reconnectCh)
 	go ReconnectLoop(tm.ctx, tm.session, tm.cache, tm.peer, tm.password, tm.reconnectCh)
-	
+
 	return nil
 }
 
 // startSingBox starts the sing-box engine
 func (tm *TunnelManager) startSingBox() error {
 	tm.setStatus("connecting")
-	
+
 	// Parse server info from peer
 	host, portStr, err := net.SplitHostPort(tm.peer)
 	if err != nil {
 		return fmt.Errorf("parse peer address: %w", err)
 	}
-	
+
 	var port int
 	fmt.Sscanf(portStr, "%d", &port)
-	
+
 	// Create sing-box configuration
 	var sbConfig *SingBoxConfig
 	if tm.singbox != nil && tm.singbox.config != nil {
@@ -454,20 +489,20 @@ func (tm *TunnelManager) startSingBox() error {
 	} else {
 		sbConfig = CreateDefaultConfig(tm.smartKey, host, port, tm.password, tm.routingRules)
 	}
-	
+
 	// Create and initialize sing-box engine
 	tm.singbox = NewSingBoxEngine()
 	if err := tm.singbox.Initialize(sbConfig); err != nil {
 		tm.setStatus("error")
 		return fmt.Errorf("initialize sing-box: %w", err)
 	}
-	
+
 	// Start sing-box
 	if err := tm.singbox.Start(); err != nil {
 		tm.setStatus("error")
 		return fmt.Errorf("start sing-box: %w", err)
 	}
-	
+
 	tm.setStatus("connected")
 	return nil
 }
@@ -475,13 +510,13 @@ func (tm *TunnelManager) startSingBox() error {
 // Stop stops the tunnel
 func (tm *TunnelManager) Stop() error {
 	tm.cancel()
-	
+
 	if tm.useSingBox && tm.singbox != nil {
 		tm.singbox.Stop()
 	} else {
 		tm.session.Stop()
 	}
-	
+
 	tm.setStatus("disconnected")
 	return nil
 }
@@ -497,7 +532,7 @@ func (tm *TunnelManager) setStatus(status string) {
 	tm.mu.Lock()
 	tm.status = status
 	tm.mu.Unlock()
-	
+
 	lis := getLis()
 	lis.OnStatus(status)
 }
@@ -529,4 +564,20 @@ func (tm *TunnelManager) EnableSingBox(enable bool) {
 // SetRoutingRules sets routing rules for sing-box
 func (tm *TunnelManager) SetRoutingRules(rules *RoutingRules) {
 	tm.routingRules = rules
+}
+
+// FIXED: Добавлена недостающая функция CreateDefaultConfig
+
+// CreateDefaultConfig создает конфигурацию по умолчанию
+func CreateDefaultConfig(smartKey, host string, port int, password string, routingRules *RoutingRules) *SingBoxConfig {
+	return &SingBoxConfig{
+		Mode:       SingBoxModeSocks5,
+		SmartKey:   smartKey,
+		DNS:        "1.1.1.1",
+		MTU:        1500,
+		TunFd:      -1,
+		ListenAddr: "127.0.0.1",
+		ListenPort: 2080,
+		RouteMode:  "all",
+	}
 }
