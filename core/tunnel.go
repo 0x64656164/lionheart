@@ -17,6 +17,9 @@ import (
 	"github.com/hashicorp/yamux"
 	"github.com/pion/turn/v4"
 	"github.com/xtaci/kcp-go/v5"
+
+	// FIXED: добавлен недостающий импорт option
+	"github.com/sagernet/sing-box/option"
 )
 
 const (
@@ -338,8 +341,6 @@ func ReconnectLoop(ctx context.Context, sess *Session, cache *CredsCache, peer, 
 
 // --- Tunnel Manager with sing-box integration ---
 
-// FIXED: Добавлены недостающие type definitions для SingBoxEngine и RoutingRules
-
 // SingBoxEngine обертка для sing-box движка
 type SingBoxEngine struct {
 	config *SingBoxConfig
@@ -565,8 +566,6 @@ func (tm *TunnelManager) EnableSingBox(enable bool) {
 func (tm *TunnelManager) SetRoutingRules(rules *RoutingRules) {
 	tm.routingRules = rules
 }
-
-// FIXED: Добавлена недостающая функция CreateDefaultConfig
 
 // CreateDefaultConfig создает конфигурацию по умолчанию
 func CreateDefaultConfig(smartKey, host string, port int, password string, routingRules *RoutingRules) *SingBoxConfig {
