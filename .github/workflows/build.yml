@@ -85,9 +85,9 @@ jobs:
 
       - name: Sync dependencies
         run: |
-          cd core && go mod tidy
-          cd ../cmd/lionheart && go mod tidy
-          cd ../mobile/android/golib && go mod tidy
+          cd ~/core && go mod tidy
+          cd ~/cmd/lionheart && go mod tidy
+          cd ~/mobile/android/golib && go mod tidy
 
       - name: Cache Go modules
         uses: actions/cache@v4
