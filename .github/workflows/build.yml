@@ -84,7 +84,7 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Tidy
-        working-directory: ${{ matrix.path }}
+        working-directory: ~/core
         run: go mod tidy
 
       - name: Cache Go modules
