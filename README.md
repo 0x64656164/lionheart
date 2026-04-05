@@ -97,10 +97,40 @@ gomobile bind -target=android -o ../app/libs/liblionheart.aar
 }
 ```
 
+## Сборка через GitHub Actions
+
+### Ручная сборка (workflow_dispatch)
+
+1. Перейдите в раздел **Actions** → **Build Lionheart**
+2. Нажмите **Run workflow**
+3. Укажите параметры:
+   - **Version**: версия (например, `v1.4.0`)
+   - **Create release**: создать релиз на GitHub
+   - **Build CLI binaries**: собрать CLI бинарники
+   - **Build Android AAR**: собрать Android библиотеку
+
+### Автоматическая сборка
+
+- **CI**: проверка кода при пуше и PR
+- **Nightly**: ежедневная сборка в 00:00 UTC
+- **Docker**: сборка Docker образов при пуше тегов
+
+### Docker
+
+```bash
+# Сервер
+docker run -d \
+  -e LIONHEART_PASSWORD=your_password \
+  -p 8443:8443/udp \
+  -p 8443:8443/tcp \
+  ghcr.io/yourusername/lionheart-server:latest
+```
+
 ## Документация
 
 - [Миграция на sing-box](docs/SINGBOX_MIGRATION.md)
 - [Примеры конфигураций](config/examples/)
+- [GitHub Actions](.github/workflows/)
 
 ## Лицензия
 
