@@ -78,10 +78,11 @@ jobs:
             ${{ runner.os }}-go-${{ matrix.component }}-
 
       - name: Sync dependencies
+        working-directory: ${{ matrix.path }}
         run: |
           cd core && go mod tidy
-          cd cmd/lionheart && go mod tidy
-          cd mobile/android/golib && go mod tidy
+          cd ../cmd/lionheart && go mod tidy
+          cd ../mobile/android/golib && go mod tidy
 
       - name: Build
         working-directory: ${{ matrix.path }}
@@ -107,10 +108,11 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           
       - name: Sync dependencies
+        working-directory: ${{ matrix.path }}
         run: |
           cd core && go mod tidy
-          cd cmd/lionheart && go mod tidy
-          cd mobile/android/golib && go mod tidy
+          cd ../cmd/lionheart && go mod tidy
+          cd ../mobile/android/golib && go mod tidy
 
       - name: Cache Go modules
         uses: actions/cache@v4
@@ -164,10 +166,11 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
           
       - name: Sync dependencies
+        working-directory: ${{ matrix.path }}
         run: |
           cd core && go mod tidy
-          cd cmd/lionheart && go mod tidy
-          cd mobile/android/golib && go mod tidy
+          cd ../cmd/lionheart && go mod tidy
+          cd ../mobile/android/golib && go mod tidy
 
       - name: Cross compile CLI
         working-directory: ./cmd/lionheart
@@ -199,10 +202,11 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
 
       - name: Sync dependencies
+        working-directory: ${{ matrix.path }}
         run: |
           cd core && go mod tidy
-          cd cmd/lionheart && go mod tidy
-          cd mobile/android/golib && go mod tidy
+          cd ../cmd/lionheart && go mod tidy
+          cd ../mobile/android/golib && go mod tidy
 
       - name: Setup Java
         uses: actions/setup-java@v4
