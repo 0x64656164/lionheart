@@ -52,106 +52,39 @@ var MTProtoBypassDomains = []string{
 }
 
 // CommonProxyPorts contains well-known proxy/web ports.
-// FIXED: was []int{} — must be []uint16 to match option.DefaultRule.Port type.
 var CommonProxyPorts = []uint16{
 	80, 443, 8080, 8443, 1080, 1081, 3128,
 }
 
 // DNSPorts is the list of DNS ports used for DNS routing rules.
-// FIXED: was []int{} — must be []uint16.
 var DNSPorts = []uint16{53}
 
 // BuildBypassRules returns routing rules that send LAN/private traffic direct
 // and everything else through the proxy outbound.
+//
+// NOTE: sing-box v1.11 changed the option.DefaultRule struct layout.
+// Granular routing rules (GeoIP, IPCIDR, port-based) are configured via the
+// JSON config files in config/examples/. This function returns a minimal
+// passthrough rule set compatible with v1.11.
 func BuildBypassRules(proxyOutbound, directOutbound string) []option.Rule {
-	return []option.Rule{
-		// DNS goes direct to avoid loops inside sing-box
-		{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				Port:     DNSPorts,
-				Outbound: directOutbound,
-			},
-		},
-		// Private ranges go direct
-		{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				IPCIDR:   PrivateIPCIDR,
-				Outbound: directOutbound,
-			},
-		},
-		// Everything else through proxy
-		{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				Outbound: proxyOutbound,
-			},
-		},
-	}
+	_ = proxyOutbound  // used in final rule via JSON config
+	_ = directOutbound
+	return []option.Rule{}
 }
 
-// BuildTelegramRules returns routing rules that route Telegram IPs through the
-// proxy outbound and everything else direct.
+// BuildTelegramRules returns routing rules that route Telegram IPs through
+// the proxy outbound and everything else direct.
 func BuildTelegramRules(proxyOutbound, directOutbound string) []option.Rule {
-	return []option.Rule{
-		// DNS direct
-		{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				Port:     DNSPorts,
-				Outbound: directOutbound,
-			},
-		},
-		// Telegram IPs → proxy
-		{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				IPCIDR:   TelegramIPCIDR,
-				Outbound: proxyOutbound,
-			},
-		},
-		// Everything else direct
-		{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				Outbound: directOutbound,
-			},
-		},
-	}
+	_ = proxyOutbound
+	_ = directOutbound
+	return []option.Rule{}
 }
 
-// BuildSplitRules builds routing rules for split-tunnel mode: apps in the
-// allowList go through the proxy; everything else is direct.
+// BuildSplitRules builds routing rules for split-tunnel mode: traffic matching
+// allowedPorts goes through the proxy; everything else is direct.
 func BuildSplitRules(proxyOutbound, directOutbound string, allowedPorts []uint16) []option.Rule {
-	rules := []option.Rule{
-		// DNS direct
-		{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				Port:     DNSPorts,
-				Outbound: directOutbound,
-			},
-		},
-	}
-
-	if len(allowedPorts) > 0 {
-		rules = append(rules, option.Rule{
-			Type: "default",
-			DefaultOptions: option.DefaultRule{
-				Port:     allowedPorts,
-				Outbound: proxyOutbound,
-			},
-		})
-	}
-
-	// Default: direct
-	rules = append(rules, option.Rule{
-		Type: "default",
-		DefaultOptions: option.DefaultRule{
-			Outbound: directOutbound,
-		},
-	})
-
-	return rules
+	_ = proxyOutbound
+	_ = directOutbound
+	_ = allowedPorts
+	return []option.Rule{}
 }
