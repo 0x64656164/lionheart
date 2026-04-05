@@ -81,6 +81,10 @@ jobs:
         working-directory: ${{ matrix.path }}
         run: go mod download
 
+      - name: Tidy
+        working-directory: ${{ matrix.path }}
+        run: go mod tidy
+
       - name: Build
         working-directory: ${{ matrix.path }}
         run: go build -v ./...
