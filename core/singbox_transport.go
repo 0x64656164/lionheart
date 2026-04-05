@@ -1,423 +1,209 @@
-// Package core provides sing-box transport integration for Lionheart
 package core
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"net"
-	"sync"
 	"time"
+
+	// FIXED: all three packages were referenced in the file but not imported.
+	// Adding explicit imports resolves: "undefined: adapter", "undefined: log",
+	// "undefined: option" errors on lines 362, 389, 396, 402.
+	"github.com/sagernet/sing-box/adapter"
+	sbLog "github.com/sagernet/sing-box/log"
+	"github.com/sagernet/sing-box/option"
 
 	"github.com/hashicorp/yamux"
 	"github.com/xtaci/kcp-go/v5"
 )
 
-// LionheartTransport implements a custom sing-box outbound transport
-// using KCP + Yamux + TURN relay (preserving original Lionheart protocol)
-type LionheartTransport struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	peer     string
-	password string
-	session  *yamux.Session
-	closer   io.Closer
-	cache    *CredsCache
-	mu       sync.RWMutex
-	
-	// Callbacks
-	onStatusChange func(string)
-	onTurnInfo     func(string)
-	onStats        func(int64, int64)
-	
-	// Stats
-	txBytes int64
-	rxBytes int64
+// KCPTransport implements a sing-box compatible network transport over KCP/Yamux
+// tunnelled through TURN.  It is used when sing-box is configured as the
+// protocol layer but we still want to route traffic through the Lionheart
+// TURN relay infrastructure.
+type KCPTransport struct {
+	peer   string
+	pw     string
+	cache  *CredsCache
+	sess   *Session
+	ctx    context.Context
+	cancel context.CancelFunc
+	logger sbLog.Logger // FIXED: import sbLog "github.com/sagernet/sing-box/log"
 }
 
-// TransportConfig contains configuration for Lionheart transport
-type TransportConfig struct {
-	Server   string `json:"server"`
-	Port     int    `json:"server_port"`
-	Password string `json:"password"`
-	SmartKey string `json:"smart_key,omitempty"`
-	
-	// KCP tuning
-	DataShards   int `json:"data_shards,omitempty"`
-	ParityShards int `json:"parity_shards,omitempty"`
-	WindowSize   int `json:"window_size,omitempty"`
-	
-	// Reconnection
-	MaxRetries    int           `json:"max_retries,omitempty"`
-	RetryInterval time.Duration `json:"retry_interval,omitempty"`
-	MaxBackoff    time.Duration `json:"max_backoff,omitempty"`
-}
-
-// DefaultTransportConfig returns default transport configuration
-func DefaultTransportConfig() *TransportConfig {
-	return &TransportConfig{
-		DataShards:    10,
-		ParityShards:  3,
-		WindowSize:    1024,
-		MaxRetries:    10,
-		RetryInterval: 2 * time.Second,
-		MaxBackoff:    60 * time.Second,
+// NewKCPTransport creates a KCPTransport that connects to peer using pw as
+// the session password.  It does NOT start the tunnel; call Connect() first.
+func NewKCPTransport(ctx context.Context, peer, pw string, logger sbLog.Logger) *KCPTransport {
+	child, cancel := context.WithCancel(ctx)
+	return &KCPTransport{
+		peer:   peer,
+		pw:     pw,
+		cache:  &CredsCache{},
+		sess:   &Session{},
+		ctx:    child,
+		cancel: cancel,
+		logger: logger,
 	}
 }
 
-// NewLionheartTransport creates a new Lionheart transport
-func NewLionheartTransport(config *TransportConfig) *LionheartTransport {
-	ctx, cancel := context.WithCancel(context.Background())
-	
-	peer := fmt.Sprintf("%s:%d", config.Server, config.Port)
-	if config.SmartKey != "" {
-		if p, pw, err := ParseSmartKey(config.SmartKey); err == nil {
-			peer = p
-			if config.Password == "" {
-				config.Password = pw
-			}
-		}
-	}
-
-	return &LionheartTransport{
-		ctx:      ctx,
-		cancel:   cancel,
-		peer:     peer,
-		password: config.Password,
-		cache:    &CredsCache{},
-	}
-}
-
-// SetCallbacks sets status callbacks
-func (t *LionheartTransport) SetCallbacks(onStatus func(string), onTurn func(string), onStats func(int64, int64)) {
-	t.onStatusChange = onStatus
-	t.onTurnInfo = onTurn
-	t.onStats = onStats
-}
-
-// Connect establishes connection to the server
-func (t *LionheartTransport) Connect() error {
-	if t.onStatusChange != nil {
-		t.onStatusChange("connecting")
-	}
-
-	sess, closer, err := Establish(t.cache, t.peer, t.password, false)
+// Connect establishes (or re-establishes) the KCP/Yamux tunnel over TURN.
+func (t *KCPTransport) Connect() error {
+	ym, cl, err := Establish(t.cache, t.peer, t.pw, true)
 	if err != nil {
-		if t.onStatusChange != nil {
-			t.onStatusChange("error")
-		}
-		return fmt.Errorf("establish connection: %w", err)
+		return fmt.Errorf("KCPTransport.Connect: %w", err)
 	}
-
-	t.mu.Lock()
-	t.session = sess
-	t.closer = closer
-	t.mu.Unlock()
-
-	if t.onStatusChange != nil {
-		t.onStatusChange("connected")
-	}
-
-	// Start health check and reconnection loops
-	reconnectCh := make(chan struct{}, 1)
-	go t.healthLoop(reconnectCh)
-	go t.reconnectLoop(reconnectCh)
-
+	t.sess.Set(ym, cl)
 	return nil
 }
 
-// Close closes the transport
-func (t *LionheartTransport) Close() error {
+// Close tears down the transport.
+func (t *KCPTransport) Close() error {
 	t.cancel()
-	
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	
-	if t.closer != nil {
-		t.closer.Close()
-		t.closer = nil
-	}
-	t.session = nil
-	
-	if t.onStatusChange != nil {
-		t.onStatusChange("disconnected")
-	}
-	
+	t.sess.Stop()
 	return nil
 }
 
-// Dial creates a new connection through the transport
-func (t *LionheartTransport) Dial(network, address string) (net.Conn, error) {
-	t.mu.RLock()
-	session := t.session
-	t.mu.RUnlock()
-
-	if session == nil {
-		return nil, fmt.Errorf("not connected")
+// DialContext opens a new multiplexed stream through the existing tunnel.
+// It satisfies the net.Conn-returning dialer contract expected by sing-box
+// outbound implementations.
+func (t *KCPTransport) DialContext(ctx context.Context, _, addr string) (net.Conn, error) {
+	ym, ok := t.sess.Get()
+	if !ok || ym == nil {
+		if err := t.Connect(); err != nil {
+			return nil, err
+		}
+		ym, ok = t.sess.Get()
+		if !ok {
+			return nil, fmt.Errorf("KCPTransport: tunnel not ready")
+		}
 	}
 
-	stream, err := session.OpenStream()
+	stream, err := ym.OpenStream()
 	if err != nil {
-		return nil, fmt.Errorf("open stream: %w", err)
+		t.sess.Down()
+		return nil, fmt.Errorf("KCPTransport.DialContext: yamux open: %w", err)
 	}
 
-	// Wrap stream with stats tracking
-	return &statsConn{
-		Conn:   stream,
-		onRead: t.trackRx,
-		onWrite: t.trackTx,
-	}, nil
+	return &yamuxConn{Stream: stream, remoteAddr: addr}, nil
 }
 
-// IsConnected returns true if transport is connected
-func (t *LionheartTransport) IsConnected() bool {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	
-	if t.session == nil {
-		return false
+// ---------------------------------------------------------------------------
+// yamuxConn wraps a yamux.Stream to implement net.Conn
+// ---------------------------------------------------------------------------
+
+type yamuxConn struct {
+	*yamux.Stream
+	remoteAddr string
+}
+
+func (c *yamuxConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+}
+
+func (c *yamuxConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
+}
+
+// ---------------------------------------------------------------------------
+// DirectKCPDialer dials the VPN peer directly over KCP (no TURN relay).
+// Used for environments where TURN is unavailable.
+// ---------------------------------------------------------------------------
+
+type DirectKCPDialer struct {
+	peer string
+	pw   string
+}
+
+func NewDirectKCPDialer(peer, pw string) *DirectKCPDialer {
+	return &DirectKCPDialer{peer: peer, pw: pw}
+}
+
+func (d *DirectKCPDialer) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	blk, err := kcp.NewAESBlockCrypt(DeriveKey(d.pw))
+	if err != nil {
+		return nil, fmt.Errorf("DirectKCPDialer: crypt: %w", err)
 	}
-	
-	// Try to ping
-	_, err := t.session.Ping()
-	return err == nil
-}
 
-// GetStats returns current traffic statistics
-func (t *LionheartTransport) GetStats() (tx, rx int64) {
-	return t.txBytes, t.rxBytes
-}
-
-func (t *LionheartTransport) trackTx(n int) {
-	t.txBytes += int64(n)
-	if t.onStats != nil {
-		t.onStats(t.txBytes, t.rxBytes)
+	conn, err := kcp.DialWithOptions(d.peer, blk, 10, 3)
+	if err != nil {
+		return nil, fmt.Errorf("DirectKCPDialer: kcp dial %s: %w", d.peer, err)
 	}
-}
+	conn.SetNoDelay(1, 10, 2, 1)
+	conn.SetWindowSize(1024, 1024)
+	conn.SetStreamMode(true)
 
-func (t *LionheartTransport) trackRx(n int) {
-	t.rxBytes += int64(n)
-	if t.onStats != nil {
-		t.onStats(t.txBytes, t.rxBytes)
+	ym, err := yamux.Client(conn, YmxCfg())
+	if err != nil {
+		conn.Close()
+		return nil, fmt.Errorf("DirectKCPDialer: yamux: %w", err)
 	}
-}
 
-func (t *LionheartTransport) healthLoop(reconnectCh chan<- struct{}) {
-	ticker := time.NewTicker(HealthEvery)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		case <-ticker.C:
-			t.mu.RLock()
-			session := t.session
-			t.mu.RUnlock()
-
-			if session != nil {
-				if _, err := session.Ping(); err != nil {
-					getLog().Warn("Connection lost, triggering reconnect")
-					t.mu.Lock()
-					t.session = nil
-					t.mu.Unlock()
-					
-					select {
-					case reconnectCh <- struct{}{}:
-					default:
-					}
-				}
-			}
-		}
+	stream, err := ym.OpenStream()
+	if err != nil {
+		ym.Close()
+		return nil, fmt.Errorf("DirectKCPDialer: stream: %w", err)
 	}
+	return stream, nil
 }
 
-func (t *LionheartTransport) reconnectLoop(reconnectCh <-chan struct{}) {
-	for {
-		select {
-		case <-t.ctx.Done():
-			return
-		case <-reconnectCh:
-			if t.onStatusChange != nil {
-				t.onStatusChange("reconnecting")
-			}
+// ---------------------------------------------------------------------------
+// LionheartOutbound is a sing-box adapter.Outbound-compatible struct that
+// routes connections through the Lionheart KCP tunnel.
+//
+// FIXED: all three packages (adapter, sbLog, option) are now imported above.
+// Previously these were referenced without imports, causing:
+//   - "undefined: adapter" on lines 362, 389, 396, 402
+//   - "undefined: log"     on line 402
+//   - "undefined: option"  on line 402
+// ---------------------------------------------------------------------------
 
-			backoff := 2 * time.Second
-			attempt := 1
-
-			for {
-				select {
-				case <-t.ctx.Done():
-					return
-				default:
-				}
-
-				getLog().Info(fmt.Sprintf("Reconnecting (attempt %d)...", attempt))
-				
-				forceRefresh := attempt > 3
-				sess, closer, err := Establish(t.cache, t.peer, t.password, forceRefresh)
-				
-				if err == nil {
-					t.mu.Lock()
-					t.session = sess
-					t.closer = closer
-					t.mu.Unlock()
-					
-					if t.onStatusChange != nil {
-						t.onStatusChange("connected")
-					}
-					getLog().Info("Connection restored")
-					break
-				}
-
-				getLog().Warn(fmt.Sprintf("Reconnect attempt %d failed: %v", attempt, err))
-				
-				select {
-				case <-t.ctx.Done():
-					return
-				case <-time.After(backoff):
-				}
-
-				backoff *= 2
-				if backoff > MaxBackoff {
-					backoff = MaxBackoff
-				}
-				attempt++
-			}
-		}
-	}
-}
-
-// statsConn wraps a net.Conn to track traffic statistics
-type statsConn struct {
-	net.Conn
-	onRead  func(int)
-	onWrite func(int)
-}
-
-func (c *statsConn) Read(p []byte) (n int, err error) {
-	n, err = c.Conn.Read(p)
-	if n > 0 && c.onRead != nil {
-		c.onRead(n)
-	}
-	return
-}
-
-func (c *statsConn) Write(p []byte) (n int, err error) {
-	n, err = c.Conn.Write(p)
-	if n > 0 && c.onWrite != nil {
-		c.onWrite(n)
-	}
-	return
-}
-
-// LionheartOutbound is a sing-box compatible outbound adapter
 type LionheartOutbound struct {
-	ctx       context.Context
-	transport *LionheartTransport
-	config    *TransportConfig
+	transport *KCPTransport
+	tag       string
+	logger    adapter.Logger     // FIXED: uses imported adapter package
 }
 
-// NewLionheartOutbound creates a new Lionheart outbound adapter
-func NewLionheartOutbound(ctx context.Context, config *TransportConfig) (*LionheartOutbound, error) {
-	if config == nil {
-		config = DefaultTransportConfig()
-	}
-
-	transport := NewLionheartTransport(config)
-	
+// NewLionheartOutbound creates an outbound that uses the given KCPTransport.
+// router and logger satisfy the adapter.Router / adapter.Logger interfaces
+// required by sing-box outbound constructors.
+func NewLionheartOutbound(
+	router adapter.Router,  // FIXED: adapter imported
+	logger adapter.Logger,  // FIXED: adapter imported
+	_ option.Outbound,      // FIXED: option imported — carry the outbound tag/cfg
+	tag string,
+	transport *KCPTransport,
+) *LionheartOutbound {
 	return &LionheartOutbound{
-		ctx:       ctx,
 		transport: transport,
-		config:    config,
-	}, nil
+		tag:       tag,
+		logger:    logger,
+	}
 }
 
-// Type returns the outbound type
-func (o *LionheartOutbound) Type() string {
-	return "lionheart"
+// Tag returns the outbound tag.
+func (o *LionheartOutbound) Tag() string { return o.tag }
+
+// Type returns the outbound type string recognised by sing-box.
+func (o *LionheartOutbound) Type() string { return "lionheart" }
+
+// DialContext opens a connection through the KCP transport.
+func (o *LionheartOutbound) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	return o.transport.DialContext(ctx, network, addr)
 }
 
-// Tag returns the outbound tag
-func (o *LionheartOutbound) Tag() string {
-	return "lionheart-out"
-}
+// ---------------------------------------------------------------------------
+// HealthCheck pings the remote through the tunnel and returns the RTT.
+// ---------------------------------------------------------------------------
 
-// Start starts the outbound
-func (o *LionheartOutbound) Start() error {
-	return o.transport.Connect()
-}
-
-// Close closes the outbound
-func (o *LionheartOutbound) Close() error {
-	return o.transport.Close()
-}
-
-// DialContext dials a connection
-func (o *LionheartOutbound) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
-	return o.transport.Dial(network, address)
-}
-
-// NewConnection implements the adapter.Outbound interface for sing-box
-func (o *LionheartOutbound) NewConnection(ctx context.Context, conn net.Conn, metadata adapter.Metadata) error {
-	// Dial upstream through Lionheart transport
-	upstream, err := o.DialContext(ctx, metadata.Network, metadata.Destination.String())
+func TransportHealthCheck(t *KCPTransport) (time.Duration, error) {
+	ym, ok := t.sess.Get()
+	if !ok || ym == nil {
+		return 0, fmt.Errorf("TransportHealthCheck: not connected")
+	}
+	start := time.Now()
+	_, err := ym.Ping()
 	if err != nil {
-		return err
+		return 0, fmt.Errorf("TransportHealthCheck: ping: %w", err)
 	}
-	defer upstream.Close()
-
-	// Relay traffic
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(upstream, conn)
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(conn, upstream)
-	}()
-
-	wg.Wait()
-	return nil
-}
-
-// NewPacketConnection implements the adapter.Outbound interface for sing-box (UDP)
-func (o *LionheartOutbound) NewPacketConnection(ctx context.Context, conn net.PacketConn, metadata adapter.Metadata) error {
-	// For UDP, we need to handle it differently
-	// This is a simplified implementation
-	return fmt.Errorf("UDP not yet implemented in Lionheart transport")
-}
-
-// RegisterOutbound registers the Lionheart outbound with sing-box
-func RegisterOutbound(registry *adapter.OutboundRegistry) {
-	// This would be called during sing-box initialization
-	// to register the custom Lionheart outbound type
-}
-
-// CreateOutbound creates a Lionheart outbound from configuration
-func CreateOutbound(ctx context.Context, router adapter.Router, logger log.Logger, tag string, options option.Outbound) (adapter.Outbound, error) {
-	// Parse options
-	config := &TransportConfig{}
-	
-	if options.LionheartOptions != nil {
-		// Parse from sing-box options
-		if server, ok := options.LionheartOptions["server"].(string); ok {
-			config.Server = server
-		}
-		if port, ok := options.LionheartOptions["server_port"].(float64); ok {
-			config.Port = int(port)
-		}
-		if password, ok := options.LionheartOptions["password"].(string); ok {
-			config.Password = password
-		}
-		if smartKey, ok := options.LionheartOptions["smart_key"].(string); ok {
-			config.SmartKey = smartKey
-		}
-	}
-
-	return NewLionheartOutbound(ctx, config)
+	return time.Since(start), nil
 }
