@@ -77,13 +77,11 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-go-${{ matrix.component }}-
 
-      - name: Download dependencies
-        working-directory: ${{ matrix.path }}
-        run: go mod download
-
-      - name: Tidy
-        working-directory: ${{ matrix.path }}
-        run: go mod tidy
+      - name: Sync dependencies
+        run: |
+          cd core && go mod tidy
+          cd ../cmd/lionheart && go mod tidy
+          cd ../mobile/android/golib && go mod tidy
 
       - name: Build
         working-directory: ${{ matrix.path }}
