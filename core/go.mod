@@ -11,7 +11,7 @@ require (
 )
 
 require (
-	berty.tech/go-libp2p-tor-transport v1.0.0 // indirect
+	berty.tech/go-libp2p-tor-transport v0.8.4 // indirect
 	github.com/ajg/form v1.5.1 // indirect
 	github.com/gofrs/uuid/v5 v5.3.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
