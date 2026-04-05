@@ -67,21 +67,21 @@ func BuildBypassRules(proxyOutbound, directOutbound string) []option.Rule {
 	return []option.Rule{
 		// DNS goes direct to avoid loops inside sing-box
 		{
-			DefaultOptions: option.DefaultRouteRule{
-				Port:     []uint16{53}, // FIXED: []uint16, not []int
+			DefaultOptions: option.DefaultRule{
+				Port:     []uint16{53},
 				Outbound: directOutbound,
 			},
 		},
 		// Private ranges go direct
 		{
-			DefaultOptions: option.DefaultRouteRule{
+			DefaultOptions: option.DefaultRule{
 				IPCIDR:   PrivateIPCIDR,
 				Outbound: directOutbound,
 			},
 		},
 		// Everything else through proxy
 		{
-			DefaultOptions: option.DefaultRouteRule{
+			DefaultOptions: option.DefaultRule{
 				Outbound: proxyOutbound,
 			},
 		},
@@ -94,21 +94,21 @@ func BuildTelegramRules(proxyOutbound, directOutbound string) []option.Rule {
 	return []option.Rule{
 		// DNS direct
 		{
-			DefaultOptions: option.DefaultRouteRule{
-				Port:     []uint16{53}, // FIXED: []uint16, not []int
+			DefaultOptions: option.DefaultRule{
+				Port:     []uint16{53},
 				Outbound: directOutbound,
 			},
 		},
 		// Telegram IPs → proxy
 		{
-			DefaultOptions: option.DefaultRouteRule{
+			DefaultOptions: option.DefaultRule{
 				IPCIDR:   TelegramIPCIDR,
 				Outbound: proxyOutbound,
 			},
 		},
 		// Everything else direct
 		{
-			DefaultOptions: option.DefaultRouteRule{
+			DefaultOptions: option.DefaultRule{
 				Outbound: directOutbound,
 			},
 		},
@@ -121,7 +121,7 @@ func BuildSplitRules(proxyOutbound, directOutbound string, allowedPorts []uint16
 	rules := []option.Rule{
 		// DNS direct
 		{
-			DefaultOptions: option.DefaultRouteRule{
+			DefaultOptions: option.DefaultRule{
 				Port:     DNSPorts,
 				Outbound: directOutbound,
 			},
@@ -130,8 +130,8 @@ func BuildSplitRules(proxyOutbound, directOutbound string, allowedPorts []uint16
 
 	if len(allowedPorts) > 0 {
 		rules = append(rules, option.Rule{
-			DefaultOptions: option.DefaultRouteRule{
-				Port:     allowedPorts, // already []uint16
+			DefaultOptions: option.DefaultRule{
+				Port:     allowedPorts,
 				Outbound: proxyOutbound,
 			},
 		})
@@ -139,7 +139,7 @@ func BuildSplitRules(proxyOutbound, directOutbound string, allowedPorts []uint16
 
 	// Default: direct
 	rules = append(rules, option.Rule{
-		DefaultOptions: option.DefaultRouteRule{
+		DefaultOptions: option.DefaultRule{
 			Outbound: directOutbound,
 		},
 	})
