@@ -1,0 +1,386 @@
+name: Build Lionheart
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.4.0)'
+        required: true
+        default: 'v1.4.0'
+      release:
+        description: 'Create release'
+        required: true
+        type: boolean
+        default: false
+      build_cli:
+        description: 'Build CLI binaries'
+        required: true
+        type: boolean
+        default: true
+      build_android:
+        description: 'Build Android AAR'
+        required: true
+        type: boolean
+        default: true
+
+env:
+  GO_VERSION: '1.22'
+  JAVA_VERSION: '17'
+  ANDROID_API: '34'
+  NDK_VERSION: '25.2.9519653'
+
+jobs:
+  # ============================================
+  # Build CLI Binaries
+  # ============================================
+  build-cli:
+    if: ${{ github.event.inputs.build_cli == 'true' }}
+    name: Build CLI (${{ matrix.os }}-${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux
+          - os: linux
+            arch: amd64
+            suffix: linux-x64
+          - os: linux
+            arch: arm64
+            suffix: linux-arm64
+          - os: linux
+            arch: '386'
+            suffix: linux-x86
+          # macOS
+          - os: darwin
+            arch: amd64
+            suffix: macos-x64
+          - os: darwin
+            arch: arm64
+            suffix: macos-arm64
+          # Windows
+          - os: windows
+            arch: amd64
+            suffix: windows-x64
+            ext: .exe
+          - os: windows
+            arch: arm64
+            suffix: windows-arm64
+            ext: .exe
+          # FreeBSD
+          - os: freebsd
+            arch: amd64
+            suffix: freebsd-x64
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-
+
+      - name: Build CLI binary
+        working-directory: ./cmd/lionheart
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          OUTPUT="lionheart-${{ github.event.inputs.version }}-${{ matrix.suffix }}${{ matrix.ext }}"
+          echo "Building $OUTPUT..."
+          go build -ldflags="-s -w -X github.com/lionheart-vpn/lionheart/core.Version=${{ github.event.inputs.version }}" -o "$OUTPUT" .
+          ls -la "$OUTPUT"
+          file "$OUTPUT" || true
+
+      - name: Compress binary (Unix)
+        if: matrix.os != 'windows'
+        working-directory: ./cmd/lionheart
+        run: |
+          OUTPUT="lionheart-${{ github.event.inputs.version }}-${{ matrix.suffix }}"
+          tar -czf "${OUTPUT}.tar.gz" "$OUTPUT"
+          sha256sum "${OUTPUT}.tar.gz" > "${OUTPUT}.tar.gz.sha256"
+
+      - name: Compress binary (Windows)
+        if: matrix.os == 'windows'
+        working-directory: ./cmd/lionheart
+        run: |
+          OUTPUT="lionheart-${{ github.event.inputs.version }}-${{ matrix.suffix }}"
+          zip "${OUTPUT}.zip" "${OUTPUT}.exe"
+          sha256sum "${OUTPUT}.zip" > "${OUTPUT}.zip.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.suffix }}
+          path: |
+            ./cmd/lionheart/*.tar.gz
+            ./cmd/lionheart/*.zip
+            ./cmd/lionheart/*.sha256
+          if-no-files-found: error
+
+  # ============================================
+  # Build Android AAR
+  # ============================================
+  build-android:
+    if: ${{ github.event.inputs.build_android == 'true' }}
+    name: Build Android AAR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;${{ env.NDK_VERSION }}"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-android-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-android-
+
+      - name: Build AAR
+        working-directory: ./mobile/android/golib
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+        run: |
+          go mod tidy
+          mkdir -p ../app/libs
+          gomobile bind \
+            -target=android \
+            -androidapi=24 \
+            -ldflags="-s -w" \
+            -o ../app/libs/liblionheart.aar \
+            .
+          ls -la ../app/libs/
+
+      - name: Compress AAR
+        working-directory: ./mobile/android
+        run: |
+          mkdir -p output
+          cp app/libs/liblionheart.aar "output/liblionheart-${{ github.event.inputs.version }}.aar"
+          cd output
+          sha256sum "liblionheart-${{ github.event.inputs.version }}.aar" > "liblionheart-${{ github.event.inputs.version }}.aar.sha256"
+
+      - name: Upload AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-aar
+          path: |
+            ./mobile/android/output/*.aar
+            ./mobile/android/output/*.sha256
+          if-no-files-found: error
+
+  # ============================================
+  # Build Android APK (optional)
+  # ============================================
+  build-apk:
+    if: ${{ github.event.inputs.build_android == 'true' }}
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    needs: build-android
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: 'temurin'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Download AAR
+        uses: actions/download-artifact@v4
+        with:
+          name: android-aar
+          path: ./mobile/android/app/libs/
+
+      - name: Rename AAR
+        working-directory: ./mobile/android/app/libs
+        run: |
+          mv liblionheart-*.aar liblionheart.aar
+          ls -la
+
+      - name: Grant execute permission for gradlew
+        working-directory: ./mobile/android
+        run: chmod +x gradlew
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build Debug APK
+        working-directory: ./mobile/android
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          ./gradlew assembleDebug --no-daemon
+
+      - name: Build Release APK
+        working-directory: ./mobile/android
+        env:
+          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
+        run: |
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Copy APKs
+        working-directory: ./mobile/android
+        run: |
+          mkdir -p output
+          cp app/build/outputs/apk/debug/*.apk "output/lionheart-${{ github.event.inputs.version }}-debug.apk"
+          cp app/build/outputs/apk/release/*.apk "output/lionheart-${{ github.event.inputs.version }}-release.apk"
+          cd output
+          sha256sum *.apk > checksums.sha256
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: |
+            ./mobile/android/output/*.apk
+            ./mobile/android/output/*.sha256
+          if-no-files-found: error
+
+  # ============================================
+  # Create Release
+  # ============================================
+  create-release:
+    if: ${{ github.event.inputs.release == 'true' }}
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-cli, build-android]
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: |
+          echo "Downloaded artifacts:"
+          find ./artifacts -type f -ls
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.event.inputs.version }}
+          name: Lionheart ${{ github.event.inputs.version }}
+          draft: true
+          prerelease: false
+          files: |
+            ./artifacts/*.tar.gz
+            ./artifacts/*.zip
+            ./artifacts/*.aar
+            ./artifacts/*.apk
+            ./artifacts/*.sha256
+          body: |
+            ## Lionheart ${{ github.event.inputs.version }}
+
+            ### Что нового
+            - Интеграция sing-box с поддержкой правил маршрутизации
+            - Предустановленные профили для разных сценариев использования
+            - Обратная совместимость с legacy KCP туннелем
+
+            ### Файлы
+            - CLI бинарники для Linux, macOS, Windows, FreeBSD
+            - Android AAR библиотека
+            - Android APK (debug и release)
+
+            ### Контрольные суммы
+            См. файлы `.sha256` для проверки целостности.
+
+            ### Установка
+            #### Linux/macOS
+            ```bash
+            tar -xzf lionheart-${{ github.event.inputs.version }}-linux-x64.tar.gz
+            ./lionheart-${{ github.event.inputs.version }}-linux-x64
+            ```
+
+            #### Windows
+            Распакуйте ZIP архив и запустите `lionheart.exe`
+
+            #### Android
+            Установите APK или используйте AAR в своём проекте.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ============================================
+  # Notify (optional)
+  # ============================================
+  notify:
+    name: Notify
+    runs-on: ubuntu-latest
+    needs: [build-cli, build-android, create-release]
+    if: always()
+    steps:
+      - name: Notify success
+        if: ${{ needs.build-cli.result == 'success' && needs.build-android.result == 'success' }}
+        run: |
+          echo "✅ Build completed successfully!"
+          echo "Version: ${{ github.event.inputs.version }}"
+          echo "CLI: ${{ needs.build-cli.result }}"
+          echo "Android: ${{ needs.build-android.result }}"
+          echo "Release: ${{ needs.create-release.result }}"
+
+      - name: Notify failure
+        if: ${{ needs.build-cli.result == 'failure' || needs.build-android.result == 'failure' }}
+        run: |
+          echo "❌ Build failed!"
+          echo "CLI: ${{ needs.build-cli.result }}"
+          echo "Android: ${{ needs.build-android.result }}"
+          exit 1
